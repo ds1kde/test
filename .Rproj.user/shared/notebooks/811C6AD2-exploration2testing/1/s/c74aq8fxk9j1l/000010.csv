@@ -1,0 +1,9 @@
+"0","news_df <- read.csv(""http://jakebowers.org/Data/news.df.csv"")
+news_df$sF <- factor(news_df$s)
+news_df$zF <- factor(news_df$zF)
+## Notice the design of the study
+## rpre=baseline turnout, z=treatment assignment with a newspaper,
+## s=pair (based on similarity in baseline turnout), r=outcome (turnout in 2005)
+news_df %>% dplyr::select(city,s,z,rpre,r)
+"
+"0","thelmTest <- summary(lm(r ~ z, data = news_df))$coef[2, 4]"

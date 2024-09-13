@@ -1,0 +1,516 @@
+---
+title: 'Exploration 2: How can we know when a test is a good test?: P-values, False positive rates, power, family wise error rates'
+author: 'Jake Bowers'
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+format:
+  html:
+    code-fold: true
+  pdf:
+    number-sections: true
+    colorlinks: true
+    cite-method: biblatex
+    keep-tex: true
+    monofontoptions: "Scale=0.7"
+    include-in-header:
+      text: |
+        \usepackage{bm}
+        \usepackage{amsmath, booktabs, caption, longtable,listings,fancyvrb,fvextra}
+        \DeclareOldFontCommand{\bf}{\normalfont\bfseries}{\mathbf}
+fontsize: 10pt
+geometry: margin=1in
+graphics: yes
+bibliography: classbib.bib
+biblio-style: "authoryear-comp,natbib"
+---
+
+\input{mytexsymbols}
+
+```{r setup, echo=FALSE, results=FALSE, include=FALSE, cache=FALSE}
+library(here)
+source(here("qmd_setup.R"))
+```
+
+```{r loadlibs, echo=FALSE, include=FALSE, results=FALSE}
+library(tidyverse)
+library(broom)
+library(estimatr)
+library(coin)
+library(robustbase)
+library(DeclareDesign)
+```
+
+# Key readings
+
+- @bowers2020causality. We will revisit the parts on estimation. The emphasis
+  this week is on hypothesis testing.
+- @fisher:1935, chapter 2. This is a pretty weird chapter. But you won't read
+  it if you are not assigned it. And it invents the modern hypothesis test in
+  the context of Dr. Muriel Bristol ("the Lady") tasting tea. The modern
+  treatments are in @rosenbaum2020book, Chapter 2, @rosenbaum2017observation
+  the chapters you've read already about experiments.
+- For tests of the **weak null of no average effects**, revisit your reading of
+  the @gerber2012field chapter 3. If you are very motivated, see
+  @neyman1923application and associated commentary which mostly focuses on
+  estimation. The @bowers2020causality piece also deals with tests of the weak
+  null hypothesis of no average effects.
+- **Recommended:**
+  - For a recent piece about **sharp null hypotheses** see
+  @caughey2023randomisation.
+  - And if you are very motivated to learn more about
+  sharp null hypothesis testing (with applications to structural models of how
+  treatments propagate across networks) see
+  @bowers2013reasoning,@bowers2016research,@bowers2018models.
+  - Or if you are
+  interested in how qualitative case studies and process tracing might build on
+  Fisher's initial case study, see our recent working paper @lopezbowers2024p
+  <https://arxiv.org/pdf/2310.13826>
+
+
+Some of the questions raised below have no easy answer. The point of these questions is to encourage you to grapple with hard and interesting questions and to apply the reading to those questions.
+
+# The Scenario(s)
+
+A campaign consultant has been recommended to you by a friend. You setup
+a call with the person and you find that he has many questions. He has lots of
+questions for you about hypothesis testing. First, he is worried about the
+following analysis of a field experiment that randomly assigned newspaper
+advertisements within pairs of similar cities. He says:
+
+"I think that candidates in US elections should spend money on newspaper
+advertisements rather than on door-to-door canvassing or youtube ads: everyone
+I know reads the newspaper on paper everyday! I mean, what is this youtube
+thing? I found this experiment by [@pana2006] which randomly assigned newspaper
+ads within pairs of cities. I'd like to use it to learn whether I am correct
+about the power of newspaper advertisements to get people voting. But people
+are critical of how I did my statistical analysis (or rather, how the analyst I
+hired did the statistical analysis).
+
+**Note to students: All of the questions below are questions you should at
+least think about answering. Maybe you can answer multiple questions together.
+Or maybe you want to address each one of them based on the reading.**
+
+Before my analyst quit, she said that this next result was 'bad' and that I
+should (1) do a 'randomization-justified test rather than a CLT+IID justified
+test' and (2) 'assess the realized false positive error rate of that test'.
+What should I do? What is the difference between the two tests?  I'm confused
+about how you "justify" a test --- why or how would randomization "justify" a
+test?  Can you please do this for me (do a randomization-justified test and
+assess it's false positive rate)? Can you explain what it means for
+"randomization to justify a test"? If randomization justifies one kind of test,
+then what justifies the $p$-values that I am used to seeing from my good old
+friend the `lm` command? (Maybe the later code will help you do these tasks.)
+I just want to know whether my treatment of newspaper advertisements caused a
+change in voter turnout in these cities. Here is my version:"
+
+```{r loaddata_and_setup}
+news_df <- read.csv("http://jakebowers.org/Data/news.df.csv")
+news_df$sF <- factor(news_df$s)
+news_df$zF <- factor(news_df$zF)
+## Notice the design of the study
+## rpre=baseline turnout, z=treatment assignment with a newspaper,
+## s=pair (based on similarity in baseline turnout), r=outcome (turnout in 2005)
+news_df %>% dplyr::select(city,s,z,rpre,r)
+thelmTest <- summary(lm(r ~ z, data = news_df))$coef[2, 4]
+```
+
+What hypothesis is `thelmTest` testing anyway?
+
+# What is a p-value? What is a hypothesis test?
+
+"What does that $p$-value in the object `thelmtest`mean? People keep using the
+word, 'significant' and it is driving me crazy --- I want to understand
+something about newspapers and voting. Can you explain in words without use the
+word "significant" what the $p$-value recorded in `thelmTest` means? I've heard
+that there is this very embarrassing video that talks about this:
+<https://www.youtube.com/watch?v=rrSduHsH47I> and it is even more embarrassing
+for whoever agreed to do this in Spanish
+<https://www.youtube.com/watch?v=tuD9ppVMiYk>. Maybe this resource is useful
+too:
+<https://egap.github.io/theory_and_practice_of_field_experiments/hypothesis-testing.html>
+including the slides and links to EGAP methods guides. Or the stuff on
+hypothesis testing here
+<http://static.jakebowers.org/PAPERS/Jake_Bowers_Thomas_Leavitt_Causal_Inference_Book_Chapter.pdf>"
+
+"My analyst then said that she'd test the hypothesis another way "following the
+design" and did the following in two chunks of R code. How is this a hypothesis
+test? It seems to test a different hypothesis and does so in a different way
+from above. What is going on? Can you explain how it tests a hypothesis?"
+
+```{r repeat_exp_design}
+#| echo: false
+
+## Make a function to re-run the experiment
+newexperiment <- function(z, b) {
+  ## A function to randomly assign treatment within pair
+  ## z = treatment assignment that is completely randomly assigned within block
+  ## b = a block indicator
+  ## one method unsplit(lapply(split(z, b), sample), b)
+  ## Another method uses the randomizr package to randomly
+  ## assign treatment within each block (here, a block is a pair of cities)
+  randomizr::block_ra(blocks = b, m = 1)
+}
+
+## Test: does it run
+with(news_df, newexperiment(z = z, b = sF))
+## Test: does it randomly assign exactly one city within pair
+set.seed(1234)
+newexps <- replicate(100, with(news_df, newexperiment(z = z, b = sF)))
+Bmat <- model.matrix(~ sF - 1, data = news_df)
+stopifnot(all((t(Bmat) %*% newexps) == 1))
+```
+
+"The analyst said that the following code actually tests the "sharp null
+hypothesis of no relationship" between z and r. I tried re-reading [Chapter 2,
+@fisher:1935] on "The Lady Tasting Tea" and [Chapter 1,
+@rosenbaum2017observation] and [chapter 2, @rosenbaum2010design] and noticed
+that he didn't talk about estimates at all there either. What is going on?
+Don't we need estimates to do hypothesis tests?  It seems like there some
+confusion here that has made its way into the social sciences. How can a
+hypothesis test help us do causal inference in this pair-randomized experiment
+if we are not estimating anything? (I seem people say "I've estimated this
+effect and it is statistically significant." but I don't understand what this
+means. It seems confused. Estimators estimate, they don't test.)"
+
+
+```{r dotests, eval=TRUE}
+testStat1 <- function(y, z, b) {
+  ## y is outcome
+  ## z is treatment (binary here)
+  ## b is block
+  if (length(unique(b)) == 1) {
+    ## if only one block, then this is a simple mean difference
+    return(mean(y[z == 1]) - mean(y[z == 0]))
+  } else {
+    z <- z[order(b)]
+    ys <- y[order(b)]
+    ysdiffs <- ys[z == 1] - ys[z == 0] ## assuming sorted by pair
+    meandiffs <- mean(ysdiffs)
+    return(meandiffs)
+  }
+}
+
+testStat2 <- function(y, z, b) {
+  ## y is outcome
+  ## z is treatment (binary here)
+  ## b is block
+  y <- rank(y)
+  if (length(unique(b)) == 1) {
+    ## if only one block, then this is a simple mean difference of the ranks
+    return(mean(y[z == 1]) - mean(y[z == 0]))
+  } else {
+    z <- z[order(b)]
+    ys <- y[order(b)]
+    ysdiffs <- ys[z == 1] - ys[z == 0] ## assuming sorted by pair
+    meandiffs <- mean(ysdiffs)
+    return(meandiffs)
+  }
+}
+
+obsTestStat1 <- with(news_df, testStat1(y = r, z = z, b = sF))
+obsTestStat2 <- with(news_df, testStat2(y = r, z = z, b = sF))
+set.seed(12345)
+## Permute treatment 1000  times within pairs and calculate a test statistic
+refDistNull1 <- replicate(1000, with(news_df, testStat1(y = r, z = newexperiment(z = z, b = sF), b = sF)))
+refDistNull2 <- replicate(1000, with(news_df, testStat2(y = r, z = newexperiment(z = z, b = sF), b = sF)))
+
+## One-sided p-values:
+mean(refDistNull1 >= obsTestStat1)
+mean(refDistNull2 >= obsTestStat2)
+## Rosenbaum footnote on 2-sided p-values
+2 * min(mean(refDistNull1 >= obsTestStat1), mean(refDistNull1 <= obsTestStat1))
+2 * min(mean(refDistNull2 >= obsTestStat2), mean(refDistNull2 <= obsTestStat2))
+```
+
+"And here is a plot of what the analyst called the reference distributions or randomization distributions of the two test statistics under the sharp null hypothesis of no effects. The two distributions look very different from each other! How can they both allow tests of the same hypothesis?"
+
+```{r plotnulldist}
+## Just for fun plot the reference distributions that represent the null hypothesis
+## and the observed values for the test statistics.
+plot(density(refDistNull2), xlim = range(c(refDistNull1, refDistNull2)))
+rug(refDistNull2, line = -1, lwd = 2)
+lines(density(refDistNull1), lty = 2)
+rug(refDistNull1, line = .5, lwd = 2)
+abline(v = obsTestStat2)
+abline(v = obsTestStat1)
+```
+
+"I haven't interpreted any of these $p$-values yet because I am not sure if I
+can trust them. I had thought I had to make a lot of assumptions to interpret a
+$p$-value, too. **Before we proceed can you interpret at least one of these
+$p$-values in substantive terms without saying "reject" or "significant" or
+"signifance"? Can you explain what just happened in that code in regards
+hypothesis testing? How did we test a hypothesis? How did the two tests of the
+same hypothesis differ? How did these procedures differ from the one that produced the p-value in `thelmTest`?**"
+
+# How should we choose a testing procedure?
+
+## A good test should rarely cast doubt on the truth: false positive rates
+
+"But when I even showed this version to my analyst, she yelled something about
+an 'imprecise test statistic' and typed this:"
+
+> Know that the estimates are the same for all weak null hypothesis tests here but the information in each test differs
+
+"And then she provided the following code which appears to present multiple p-values"
+
+```{r}
+## Fixed effects for pair version 1
+thelmTest1 <- tidy(lm(r ~ z + sF, data = news_df)) %>%
+  filter(term == "z") %>%
+  dplyr::select(p.value)
+
+## Fixed effects for pair version 2
+news_df$rpaired <- with(news_df, r - ave(r, sF))
+news_df$zpaired <- with(news_df, z - ave(z, sF))
+thelmTest2 <- summary(lm(rpaired ~ zpaired, data = news_df))$coef[2, 4]
+
+## Fixed effects for pair version 3
+newspaired <- group_by(news_df, s) %>% summarize(r = r[z == 1] - r[z == 0])
+thelmTest3 <- summary(lm(r ~ 1, data = newspaired))$coef[1, 4]
+
+thettest <- with(news_df[order(news_df$sF), ],t.test(Pair(r[z == 0],r[z==1])~1, data = )$p.value)
+thettest2 <- oneway_test(r ~ zF | sF, data = news_df, distribution = exact())
+thettest3 <- oneway_test(r ~ zF | sF, data = news_df, distribution = asymptotic())
+set.seed(12345)
+thettest4 <- oneway_test(r ~ zF | sF, data = news_df, distribution = approximate(nresample = 1000))
+# coin::pvalue(thettest2)
+d_o_m <- difference_in_means(r ~ z, blocks = sF, data = news_df)
+thelmTest4 <- lm_robust(r ~ z, fixed_effects = ~s, data = news_df)
+# tidy(d_o_m)$p.value
+
+thelmTest5 <- tidy(lm(I(rank(r)) ~ z + sF, data = news_df)) %>%
+  filter(term == "z") %>%
+  select(p.value)
+thelmTest6 <- tidy(lm_robust(I(rank(r)) ~ z, fixed_effects = sF, data = news_df)) %>%
+  filter(term == "z") %>%
+  select(p.value)
+thettest4 <- oneway_test(I(rank(r)) ~ zF | sF, data = news_df)
+thettest5 <- oneway_test(I(rank(r)) ~ zF | sF, data = news_df, distribution = exact())
+thettest6 <- oneway_test(I(rank(r)) ~ zF | sF, data = news_df, distribution = approximate(nresample = 1000))
+thewilcoxtest1 <- wilcox_test(r ~ zF | sF, data = news_df, distribution = exact())
+thewilcoxtest2 <- wilcox_test(r ~ zF | sF, data = news_df, distribution = approximate(nresample = 1000))
+thewilcoxtest3 <- wilcox_test(r ~ zF | sF, data = news_df, distribution = asymptotic())
+
+permtest1 <- 2 * min(mean(refDistNull1 >= obsTestStat1), mean(refDistNull1 <= obsTestStat1))
+permtest2 <- 2 * min(mean(refDistNull2 >= obsTestStat2), mean(refDistNull2 <= obsTestStat2))
+
+some_tests <- c(permtest1,permtest2,
+thelmTest,thelmTest1,thelmTest2,thelmTest3,thelmTest4$p.value,thelmTest5$p.value,thelmTest6,thettest)
+more_tests <- c("thettest2","thettest3","thettest4","thettest5","thettest6","thewilcoxtest1","thewilcoxtest2","thewilcoxtest3")
+more_p_values <- sapply(more_tests,function(nm){pvalue(get(nm))})
+all_p_values <- c(unlist(some_tests),more_p_values)
+names(all_p_values) <- NULL
+## So many p-values!!!
+all_p_values
+```
+
+"I get many different $p$-values here! I think I'm testing the same hypothesis
+of no effects (although maybe the `oneway_test` and `wilcox_test` are testing
+sharp nulls and the `lm` based tests are testing weak nulls). Which should I
+trust? Are any of them *good* $p$-values? How would I know whether this test is
+a good and useful test versus a misleading test? What do people mean when they
+talk about the size versus the level of a test? Please advise me! Maybe the
+code below will help you ---  I'm confused by much of it --- I just want to
+know whether I  can trust the $p$-values for the different least squares based
+tests that I just did. (Someone is also saying that these are tests based on a
+"difference of means test statistic". Also confusing to me. I thought I was
+modeling my data using a linear least squares model. Why would they say that? I
+think I'm confused between the idea of estimation and the idea of testing.)"
+
+"Here is more from my old analyst before she ~~fled~~ retired. She left this fragment. I'm not sure why she wrote it in sentence fragments"
+
+| If you do not know the truth, make the truth zero
+| And shuffle according to your design
+| And make (or do) the test with each shuffle
+| And collect the ps
+| And then compare the many ps to a uniform distribution
+| And focus on the proportion of ps less than $\alpha$ if you are using a single $\alpha$.
+
+> My analyst vanished while muttering about 'power', but the
+> campaign is much more interested in whether the test may be **misleading** or
+> **invalid** than about finding a more powerful test.  Here is an example that
+> I found, but it seems to use `lmrob` and I don't know what that does either.
+> Can you please explain what is happening below? Can you change it to be more
+> relevant (and perhaps work in case you find some errors)? I assume that you
+> will closely inspect every R object here so that you can explain every piece
+> of code, right?
+
+> Now my analyst gave me code to learn which $p$-value to choose to use except
+> she was looking at `lmrob` but I want to assess the $p$-values from `lm` and
+> you make that change below? She said: "Nowe seeke the errore ande thee powere
+> of othere teste statistices"
+
+```{r eval=TRUE}
+## doParallel will not work on all machines. But parallel is faster than serial.
+## I remember getting very stuck with the parallel processing.
+## Perhaps change to future package and use plan(multicore) so it defaults to sequential in machines that don't support it.
+
+library(future)
+library(doFuture) # https://cran.r-project.org/web/packages/doFuture/vignettes/doFuture.html
+registerDoFuture()
+library(doRNG)
+library(robustbase)
+plan(multicore, workers=availableCores()-1)
+
+errratefn <- function(simulations, trt, outcome, block) {
+  require(robustbase)
+  outpaired <- outcome - ave(outcome, block)
+  output <- foreach(1:simulations,
+    .packages = "robustbase",
+    .export = c("newexperiment"),
+    .combine = "c"
+  ) %dorng% {
+    ## First make a new experiment with no relationship between z and y
+    ## since we know that there is no effect, then we can assess the false positive rate of
+    ## the lmrob based test-statistic (this is an M-statistic)
+    newz <- newexperiment(z = trt, b = block)
+    newzpaired <- newz - ave(newz, block)
+    sim_p <- summary(lmrob(outpaired ~ newzpaired))$coefficients[2, 4]
+    return(sim_p)
+  }
+  return(output)
+}
+
+set.seed(12345)
+results2a <- errratefn(100, trt = news_df$z, outcome = news_df$r, block = news_df$sF)
+results2b <- errratefn(100, trt = news_df$z, outcome = news_df$r, block = news_df$sF)
+results2c <- errratefn(100, trt = news_df$z, outcome = news_df$r, block = news_df$sF)
+
+summary(results2a)
+## Hmmm... Does this next suggest too few simulations? Too much simulation error?
+## I wonder what the false positive rates actually are?
+sd(c(mean(results2a < .05), mean(results2b < .05), mean(results2c < .05)))
+```
+
+"What does that mean? I get the feeling that the analysis didn't actually
+ provide the false positive error rates, but was more interested in calculating
+ how the error rates **differed** between runs of the simulation. What I want to
+ know is whether I can trust my tests. Once you have changed the code to not
+ use `lmrob`, what do you think? Are these tests controlling the false postive
+ rate at the promised levels? If I used one of these tests and said
+ "Significant! p<.05!" would I be likely to be wrong only 5% of the time or
+ perhaps wrong more often? (I looked at the [Glossary, @rosenbaum2010design] to
+ learn about "level" and "size" of tests but still don't really get it.)
+
+## A good test easily detects signal from noise: Power or 1-False Negative Rate
+
+ "Then the analyst said, "Here is a function of power". This
+ will be useful in the future (if I can get the pesky `lmrob` function out of
+ there, or maybe use it, I'm not sure). I'd like to know how big of an effect I
+ could detect if I used $\alpha=.05$ and decided to use 80% power."
+
+```{r eval=TRUE}
+powerfn <- function(simulations, trt, outcome, block, effect) {
+  require(robustbase)
+  output <- foreach(1:simulations,
+    .packages = "robustbase",
+    .export = c("newexperiment"),
+    .combine = "c"
+  ) %dorng% {
+    newz <- newexperiment(z = trt, b = block) ## a new experiment with no relationship between z and y
+    newzpaired <- newz - ave(newz, block)
+    newoutcome <- outcome - newz * effect
+    newoutcomePaired <- newoutcome - ave(newoutcome, block)
+    sim_p <- summary(lmrob(newoutcomePaired ~ newzpaired))$coefficients[2, 4]
+    return(sim_p)
+  }
+  return(output)
+}
+
+set.seed(12345)
+## Hmm are these right?
+taus <- c(0, .5, 1, 2, 3, 10)
+somepower <- sapply(taus, function(effectSize) {
+  res <- powerfn(1000, trt = news_df$z, outcome = news_df$r, block = news_df$sF, effect = effectSize)
+  return(mean(res < .05))
+})
+
+plot(taus, somepower)
+```
+
+## A testing procedure can involve more than one $p$-value: This is multiple testing.
+
+"Ok. Now I know that the size of the exact or permutation-based test is less
+than or equal to the level of the test by substituting appropriate code into
+the error assessment function above. But then I wanted to know whether my
+randomization itself was working: after all I am not finding the results I
+wanted and maybe I figured I could argue that this study was flawed. So, I
+tested the hypothesis of no difference between each of the *background
+covariates* and treatment assignment and made the following little table (the
+`balanceTest` function does this quickly although I could also have just
+calculated several t-tests). I was happy to see that it looks like both
+household income and age differ between treated and control groups (at least
+somewhat) according to the p-values I present below (both have $p < .1$ at
+least). I showed the following to my analyst and she yelled at me again about
+my interpretation!  This time about something she called 'multiple testing' or
+'family wise error rate'. I don't get it. I did 5 tests and two of them seem
+significant at $\alpha=.1$. Why shouldn't I go and talk about how the treatment
+is related to both of those variables?""
+
+```{r multiple_testing}
+library(RItools)
+## Using balanceTest just to get a bunch of p-values testing the sharp null hypothesis of no differences between treated and control groups, justified by randomization, but using a large-sample approximation.
+xb1 <- balanceTest(z ~ rpre + medhhi1000 + medage + cands + blkpct + strata(sF), data = news_df,p.adjust.method="none" )
+theps <- xb1$results[, "p", "sF"]
+
+test_a_covariate <- function(x,z,data){
+## x is the name of a covariate
+newfmla <- as.formula(paste(z,"~",x,"|sF",collapse=""))
+ttest <- independence_test(newfmla,data=data)
+return(pvalue(ttest))
+}
+
+covariates <- c("rpre","medhhi1000","medage","cands","blkpct")
+
+theps <- sapply(covariates,function(x){ test_a_covariate(x=x,z="z",data=news_df) })
+theps
+```
+
+"The analyst said I need to "adjust" the p-values. And I found this function.
+Am I doing something wrong? Or right? Can you explain what is happening here
+and why it might matter? If I do this then I can't say anything is
+significant and so can't argue that this experiment was not well done."
+
+```{r}
+p.adjust(theps, method = "bonferroni")
+```
+
+"And she showed me the following. What is happening here? What am I supposed
+to learn from the simulation and/or the results? How would I fix things?"
+
+```{r fwerassess}
+fwerfn <- function(simulations, trt,block, data) {
+  require(coin)
+  output <- foreach(1:simulations,
+    .packages = "RItools",
+    .export = c("newexperiment"),
+    .combine = "cbind"
+  ) %dorng% {
+    data$newz <- newexperiment(z = trt, b = block)
+theps <- sapply(covariates,function(x){ test_a_covariate(x=x,z="newz",data=data) })
+    return(theps)
+  }
+  return(output)
+}
+
+set.seed(12345)
+fwer_res <- fwerfn(1000, trt = news_df$z, block = news_df$sF, data = news_df)
+## the first 5 tests where we know that the true relationship is 0
+fwer_res[, 1:5]
+## Any significant at \alpha=.1?
+false_positive_rates <- apply(fwer_res, 2, function(x) {
+  any(x <= .1)
+})
+## This should be less than or equal to .05. We should rarely reject a true hypothesis
+fwer <- mean(false_positive_rates) ## uncontrolled or at least unadjusted
+
+## Controls the FWER
+false_positive_rates1 <- apply(fwer_res, 2, function(x) {
+  any(p.adjust(x) <= .1)
+})
+fwer1 <- mean(false_positive_rates1)
+```
+
+# References
+
+

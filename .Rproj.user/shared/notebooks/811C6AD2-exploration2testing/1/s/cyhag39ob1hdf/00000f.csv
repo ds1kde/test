@@ -1,0 +1,18 @@
+"0","#| echo: false
+
+## Make a function to re-run the experiment
+newexperiment <- function(z, b) {
+  ## A function to randomly assign treatment within pair
+  ## z = treatment assignment that is completely randomly assigned within block
+  ## b = a block indicator
+  ## one method unsplit(lapply(split(z, b), sample), b)
+  ## Another method uses the randomizr package to randomly
+  ## assign treatment within each block (here, a block is a pair of cities)
+  randomizr::block_ra(blocks = b, m = 1)
+}
+
+## Test: does it run
+with(news_df, newexperiment(z = z, b = sF))
+"
+"2","Error in loadNamespace(x) : there is no package called ‘randomizr’
+"
