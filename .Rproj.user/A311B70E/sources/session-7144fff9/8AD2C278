@@ -3,7 +3,7 @@
     "path": "~/Library/CloudStorage/GoogleDrive-yeowonl2@illinois.edu/My Drive/UIUC 2024 Fall/PS 531-Quant Pol Analysis II/Github/test/DailyR.Rmd",
     "project_path": "DailyR.Rmd",
     "type": "r_markdown",
-    "hash": "0",
+    "hash": "226483504",
     "contents": "",
     "dirty": false,
     "created": 1726252696289.0,
@@ -13,15 +13,15 @@
         "tempName": "Untitled1",
         "source_window_id": "",
         "Source": "Source",
-        "cursorPosition": "220,17",
+        "cursorPosition": "191,3",
         "scrollLine": "186"
     },
     "folds": "",
-    "lastKnownWriteTime": 1726255674,
+    "lastKnownWriteTime": 1726264757,
     "encoding": "UTF-8",
     "collab_server": "",
     "source_window": "",
-    "last_content_update": 1726255674794,
+    "last_content_update": 1726264757284,
     "read_only": false,
     "read_only_alternatives": []
 }
