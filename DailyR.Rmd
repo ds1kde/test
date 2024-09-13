@@ -216,9 +216,14 @@ Now the inventory table has a column called sales_tax, where the value is 0.075 
 
 
 ```{r}
-
 # add average height column
 dogs <- dogs %>% 
   mutate(avg_height =((height_low_inches+height_high_inches)/2))
 
 head(dogs)
+```
+
+
+```{r}
+
+print(dogs)
